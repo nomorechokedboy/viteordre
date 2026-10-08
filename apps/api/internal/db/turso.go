@@ -16,10 +16,7 @@ func New(cfg *config.DatabaseConfig) (*dbx.DB, error) {
 	}
 	defer tursoDB.Close()
 
-	db, err := dbx.NewFromDB(tursoDB, "sqlite")
-	if err != nil {
-		return nil, err
-	}
+	db := dbx.NewFromDB(tursoDB, "sqlite")
 	db.LogFunc = log.Printf
 
 	return db, nil
