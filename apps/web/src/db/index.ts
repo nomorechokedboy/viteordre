@@ -1,5 +1,10 @@
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { createClient } from '@libsql/client'
+import { drizzle } from 'drizzle-orm/libsql/node'
 
-import * as schema from './schema.ts'
+import * as schema from './auth-schema'
 
-export const db = drizzle(process.env.DATABASE_URL!, { schema })
+const client = createClient({
+	url: process.env.DATABASE_URL!
+})
+
+export const db = drizzle(client, { schema })
