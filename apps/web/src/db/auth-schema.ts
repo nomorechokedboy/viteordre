@@ -77,6 +77,17 @@ export const verification = sqliteTable(
 	(table) => [index('verification_identifier_idx').on(table.identifier)]
 )
 
+// Signing keys of the jwt plugin. The Go API reads the public keys through /api/auth/jwks.
+export const jwks = sqliteTable('jwks', {
+	id: text('id').primaryKey(),
+	publicKey: text('public_key').notNull(),
+	privateKey: text('private_key').notNull(),
+	createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+	expiresAt: integer('expires_at', { mode: 'timestamp_ms' }),
+	alg: text('alg'),
+	crv: text('crv')
+})
+
 export const userRelations = relations(user, ({ many }) => ({
 	sessions: many(session),
 	accounts: many(account)
