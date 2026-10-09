@@ -29,6 +29,8 @@ type ValidationDetails struct {
 	Fields []apperr.FieldError `json:"fields"`
 }
 
+var _ errs.ErrDetails = (*ValidationDetails)(nil)
+
 // ErrDetails implements errs.ErrDetails.
 func (ValidationDetails) ErrDetails() {}
 
