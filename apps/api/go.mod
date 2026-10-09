@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	encore.dev v1.57.13
+	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/ilyakaznacheev/cleanenv v1.5.0
 	github.com/mdobak/go-xerrors v1.0.1
 	github.com/pocketbase/dbx v1.12.0
@@ -18,18 +19,21 @@ require (
 	go.opentelemetry.io/otel/sdk/log v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/oauth2 v0.37.0
+	turso.tech/database/tursogo v0.8.2
 )
 
 require (
 	github.com/BurntSushi/toml v1.2.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
+	github.com/tursodatabase/turso-go-platform-libs v0.8.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
