@@ -20,6 +20,7 @@ import (
 	"encore.dev/beta/errs"
 
 	"encore.app/internal/apperr"
+	"encore.app/internal/logger"
 	"encore.app/internal/validate"
 )
 
@@ -45,6 +46,9 @@ func ToEncore(err error) error {
 	}
 	var ae *apperr.Error
 	if errors.As(err, &ae) {
+		if ae.Kind == apperr.Internal {
+			logInternal(err)
+		}
 		b := errs.B().Code(code(ae.Kind)).Msg(ae.Message)
 		if ae.Err != nil {
 			b = b.Cause(ae.Err)
@@ -66,8 +70,13 @@ func ToEncore(err error) error {
 	case errors.Is(err, context.DeadlineExceeded):
 		return errs.B().Code(errs.DeadlineExceeded).Msg("request timed out").Cause(err).Err()
 	}
+	logInternal(err)
 	return errs.B().Code(errs.Internal).Msg("internal error").Cause(err).Err()
 }
+
+// logInternal is the one place a server-side failure is logged. The layers below only wrap and
+// return errors, so each failure shows up in the log exactly once, with its full cause chain.
+func logInternal(err error) { logger.Error("request failed", "error", err) }
 
 // Validate runs struct-tag validation and returns the result in wire form. Use
 // it as the body of a request type's Validate method, which Encore calls

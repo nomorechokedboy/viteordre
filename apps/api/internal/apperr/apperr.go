@@ -72,7 +72,8 @@ type Error struct {
 	Kind Kind
 	// Message is safe to return to clients.
 	Message string
-	// Fields is only set for InvalidArgument errors.
+	// Fields names the input the error is about. InvalidArgument errors list every bad field;
+	// a Conflict may name the one field that collides (a taken slug).
 	Fields []FieldError
 	// Err is the underlying cause. It is logged, never sent to clients.
 	Err error
@@ -110,7 +111,8 @@ func (e *Error) Unwrap() error { return e.Err }
 // work as sentinels: errors.Is(err, ErrSlugTaken) matches wrapped copies.
 func New(kind Kind, msg string) *Error { return &Error{Kind: kind, Message: msg} }
 
-// Newf is New with formatting.
+// Newf is New with formatting. It does not support %w: the text becomes the client-facing
+// Message, so never format an underlying error into it. Use Wrap to attach a cause.
 func Newf(kind Kind, format string, args ...any) *Error {
 	return &Error{Kind: kind, Message: fmt.Sprintf(format, args...)}
 }
