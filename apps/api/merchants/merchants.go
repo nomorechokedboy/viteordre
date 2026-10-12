@@ -1,29 +1,35 @@
 // Package merchants is the Encore service for creating and listing merchants.
 //
+// It is the delivery layer only: it checks the shape of the payload, hands a plain request to
+// the controller and turns the result, or the error, into the wire format. Business rules live in
+// internal/entities and internal/controllers, SQL in internal/repo.
+//
 // It needs an Encore auth handler (//encore:authhandler) that returns the signed-in user's id,
 // because both endpoints are declared with `auth`.
 package merchants
 
 import (
 	"context"
-	"errors"
-	"log/slog"
 	"os"
 	"sync"
 	"time"
 
 	"encore.dev/beta/auth"
-	"encore.dev/beta/errs"
 
+	"encore.app/internal/apperr"
+	"encore.app/internal/controllers"
 	"encore.app/internal/db"
-	"encore.app/internal/merchant"
+	"encore.app/internal/entities"
+	"encore.app/internal/httperr"
+	"encore.app/internal/logger"
+	"encore.app/internal/repo"
 	"encore.app/internal/tenantdb"
 )
 
 //encore:service
 type Service struct {
-	dbs      *tenantdb.Manager
-	merchant *merchant.MerchantController
+	dbs       *tenantdb.Manager
+	merchants *controllers.MerchantController
 
 	stopReaper context.CancelFunc
 	reaperDone sync.WaitGroup
@@ -33,25 +39,21 @@ func initService() (*Service, error) {
 	dataDir := envOr("DB_DATA_DIR", "./data")
 	opts := db.Options{BusyTimeout: 10 * time.Second, MaxOpenConns: 8}
 
-	dbs, err := tenantdb.New(
-		context.Background(),
-		dataDir,
-		envOr("DB_CONTROL_FILE", "control.db"),
-		opts,
-	)
+	dbs, err := tenantdb.New(context.Background(), dataDir, envOr("DB_CONTROL_FILE", "control.db"), opts)
 	if err != nil {
 		return nil, err
 	}
 	s := &Service{
 		dbs: dbs,
-		merchant: merchant.New(dbs.Control(), dataDir, merchant.Options{
-			ShardID: envOr("DB_SHARD_ID", "s1"),
-			DB:      opts,
-		}),
+		merchants: controllers.NewMerchantController(
+			repo.NewMerchantRepo(dbs.Control()),
+			repo.NewTenantStore(dataDir, nil, opts),
+			controllers.Options{ShardID: envOr("DB_SHARD_ID", "s1")},
+		),
 	}
 
-	// Encore cron jobs do not run when you self-host, so sweep abandoned provisioning rows
-	// with a plain ticker. Anything older than 30 minutes cannot still be in flight.
+	// Encore cron jobs do not run when you self-host, so sweep abandoned provisioning rows with a
+	// plain ticker. Anything older than 30 minutes cannot still be in flight.
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stopReaper = cancel
 	s.reaperDone.Add(1)
@@ -73,12 +75,12 @@ func initService() (*Service, error) {
 }
 
 func (s *Service) reap(ctx context.Context) {
-	n, err := s.merchant.ReapStale(ctx, 30*time.Minute)
+	n, err := s.merchants.ReapStale(ctx, 30*time.Minute)
 	if err != nil && ctx.Err() == nil {
-		slog.Error("merchants: reap failed", "error", err)
+		logger.ErrorContext(ctx, "merchants: reap failed", "error", err)
 	}
 	if n > 0 {
-		slog.Warn("merchants: removed abandoned provisioning rows", "count", n)
+		logger.WarnContext(ctx, "merchants: removed abandoned provisioning rows", "count", n)
 	}
 }
 
@@ -90,12 +92,18 @@ func (s *Service) Shutdown(force context.Context) {
 }
 
 // CreateParams is the body of POST /merchants.
+//
+// The tags only bound the size of the input. What a valid name, slug, currency or timezone is
+// lives in entities.MerchantRequest, so the rules are written once.
 type CreateParams struct {
-	Name     string `json:"name"`
-	Slug     string `json:"slug"`
-	Currency string `json:"currency,omitempty"` // ISO 4217, default VND
-	Timezone string `json:"timezone,omitempty"` // IANA name, default Asia/Ho_Chi_Minh
+	Name     string `json:"name"               validate:"required,max=200"`
+	Slug     string `json:"slug"               validate:"required,max=100"`
+	Currency string `json:"currency,omitempty" validate:"max=10"`  // ISO 4217, default VND
+	Timezone string `json:"timezone,omitempty" validate:"max=100"` // IANA name, default Asia/Ho_Chi_Minh
 }
+
+// Validate is called by Encore before the handler runs.
+func (p *CreateParams) Validate() error { return httperr.Validate(p) }
 
 // Merchant is a merchant as returned by the API.
 type Merchant struct {
@@ -109,17 +117,17 @@ type Merchant struct {
 //
 //encore:api auth method=POST path=/merchants
 func (s *Service) Create(ctx context.Context, p *CreateParams) (*Merchant, error) {
-	uid, ok := auth.UserID()
-	if !ok {
-		return nil, errs.B().Code(errs.Unauthenticated).Msg("sign in first").Err()
+	uid, err := currentUser()
+	if err != nil {
+		return nil, err
 	}
-	m, err := s.merchant.Create(ctx, merchant.Input{
-		UserID: string(uid), Name: p.Name, Slug: p.Slug, Currency: p.Currency, Timezone: p.Timezone,
+	m, err := s.merchants.Create(ctx, entities.MerchantRequest{
+		UserID: uid, Name: p.Name, Slug: p.Slug, Currency: p.Currency, Timezone: p.Timezone,
 	})
 	if err != nil {
-		return nil, toAPIError(err)
+		return nil, httperr.ToEncore(err)
 	}
-	return &Merchant{ID: m.ID, Slug: m.Slug, Name: m.Name, Role: "owner"}, nil
+	return &Merchant{ID: m.ID, Slug: m.Slug, Name: m.Name, Role: string(entities.RoleOwner)}, nil
 }
 
 // ListResponse is the body of GET /merchants.
@@ -131,42 +139,28 @@ type ListResponse struct {
 //
 //encore:api auth method=GET path=/merchants
 func (s *Service) List(ctx context.Context) (*ListResponse, error) {
-	uid, ok := auth.UserID()
-	if !ok {
-		return nil, errs.B().Code(errs.Unauthenticated).Msg("sign in first").Err()
-	}
-	ms, err := s.merchant.ListForUser(ctx, string(uid))
+	uid, err := currentUser()
 	if err != nil {
-		return nil, errs.B().Code(errs.Internal).Msg("could not list merchants").Cause(err).Err()
+		return nil, err
+	}
+	ms, err := s.merchants.ListForUser(ctx, uid)
+	if err != nil {
+		return nil, httperr.ToEncore(err)
 	}
 	out := &ListResponse{Merchants: make([]Merchant, 0, len(ms))}
 	for _, m := range ms {
-		out.Merchants = append(
-			out.Merchants,
-			Merchant{ID: m.MerchantID, Slug: m.Slug, Name: m.Name, Role: m.Role},
-		)
+		out.Merchants = append(out.Merchants, Merchant{ID: m.MerchantID, Slug: m.Slug, Name: m.Name, Role: string(m.Role)})
 	}
 	return out, nil
 }
 
-func toAPIError(err error) error {
-	var ve *merchant.ValidationError
-	switch {
-	case errors.As(err, &ve):
-		return errs.B().Code(errs.InvalidArgument).Msg(ve.Error()).Meta("field", ve.Field).Err()
-	case errors.Is(err, merchant.ErrSlugTaken):
-		return errs.B().
-			Code(errs.AlreadyExists).
-			Msg("that slug is already taken").
-			Meta("field", "slug").
-			Err()
-	case errors.Is(err, merchant.ErrLimitReached):
-		return errs.B().
-			Code(errs.ResourceExhausted).
-			Msg("you have reached the maximum number of shops").
-			Err()
+// currentUser returns the signed-in user's id, or an error ready to return from a handler.
+func currentUser() (string, error) {
+	uid, ok := auth.UserID()
+	if !ok {
+		return "", httperr.ToEncore(apperr.New(apperr.Unauthenticated, "sign in first"))
 	}
-	return errs.B().Code(errs.Internal).Msg("could not create the merchant").Cause(err).Err()
+	return string(uid), nil
 }
 
 func envOr(key, fallback string) string {
