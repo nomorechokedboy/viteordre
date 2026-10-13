@@ -2,16 +2,7 @@ import { useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { Button } from '#/components/ui/button'
 import { authClient } from '#/lib/auth-client'
-
-// Only same-site paths are accepted, so a crafted link cannot bounce users to another site.
-function safeRedirect(value: unknown): string | undefined {
-	return typeof value === 'string' &&
-		value.startsWith('/') &&
-		!value.startsWith('//') &&
-		!value.includes('\\')
-		? value
-		: undefined
-}
+import { safeRedirect } from '#/lib/redirect'
 
 export const Route = createFileRoute('/login')({
 	validateSearch: (

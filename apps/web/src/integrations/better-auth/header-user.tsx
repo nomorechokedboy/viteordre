@@ -1,47 +1,46 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useRouter } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
+import { Button } from '#/components/ui/button'
 import { authClient } from '#/lib/auth-client'
 import { clearApiToken } from '#/lib/api'
 
 export default function BetterAuthHeader() {
 	const { data: session, isPending } = authClient.useSession()
+	const router = useRouter()
+	const queryClient = useQueryClient()
+
+	async function signOut() {
+		clearApiToken()
+		await authClient.signOut()
+		await router.navigate({ to: '/login' })
+		// Cleared after leaving the page, so no mounted query refetches without a session.
+		queryClient.clear()
+	}
 
 	if (isPending) {
-		return (
-			<div className='h-8 w-8 bg-neutral-100 dark:bg-neutral-800 animate-pulse' />
-		)
+		return <div className='bg-muted h-8 w-8 animate-pulse rounded-full' />
 	}
 
 	if (session?.user) {
 		return (
-			<div className='flex items-center gap-2'>
-				{session.user.image ? (
-					<img src={session.user.image} alt='' className='h-8 w-8' />
-				) : (
-					<div className='h-8 w-8 bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center'>
-						<span className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>
-							{session.user.name.charAt(0).toUpperCase() || 'U'}
-						</span>
-					</div>
-				)}
-				<button
-					onClick={() => {
-						clearApiToken()
-						void authClient.signOut()
-					}}
-					className='flex-1 h-9 px-4 text-sm font-medium bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-50 border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors'
+			<div className='flex items-center gap-3'>
+				<span className='text-muted-foreground hidden text-sm sm:inline'>
+					{session.user.email}
+				</span>
+				<Button
+					variant='outline'
+					size='sm'
+					onClick={() => void signOut()}
 				>
 					Sign out
-				</button>
+				</Button>
 			</div>
 		)
 	}
 
 	return (
-		<Link
-			to='/login'
-			className='h-9 px-4 text-sm font-medium inline-flex items-center border border-neutral-300 dark:border-neutral-700'
-		>
-			Sign in
-		</Link>
+		<Button asChild variant='outline' size='sm'>
+			<Link to='/login'>Sign in</Link>
+		</Button>
 	)
 }
