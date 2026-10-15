@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/pocketbase/dbx"
@@ -25,13 +24,10 @@ type TenantStore struct {
 	dataDir string
 	opts    db.Options
 	fsys    fs.FS
-
-	tplMu sync.Mutex // serializes building the template
 }
 
-// NewTenantStore returns a store that keeps merchant databases in dataDir/tenants and templates in
-// dataDir/templates. fsys holds the migrations, nil means the embedded set. opts is how the
-// files are opened.
+// NewTenantStore returns a store that keeps merchant databases in dataDir/tenants. fsys holds the
+// migrations, nil means the embedded set. opts is how the files are opened.
 func NewTenantStore(dataDir string, fsys fs.FS, opts db.Options) *TenantStore {
 	if fsys == nil {
 		fsys = migrations.FS
@@ -39,43 +35,48 @@ func NewTenantStore(dataDir string, fsys fs.FS, opts db.Options) *TenantStore {
 	return &TenantStore{dataDir: dataDir, opts: opts, fsys: fsys}
 }
 
-// EnsureTemplate returns a merchant database that has every tenant migration applied and nothing
-// else in it, building it on first use.
+// Provision creates the merchant database at dbPath (relative to the data directory): it applies
+// every tenant migration to a new file, checks the result and writes the merchant_profile row. It
+// returns the schema version the database ended at.
 //
-// The file name carries the schema version, so shipping a new tenant migration makes the next call
-// build a fresh template and leaves older ones untouched. A template is never modified after it is
-// renamed into place.
-func (s *TenantStore) EnsureTemplate(ctx context.Context) (entities.TenantTemplate, error) {
+// Each merchant is migrated in place rather than copied from a prebuilt file. Turso keeps recent
+// writes in a write-ahead log beside the main file and does not fold them back on close, so
+// copying only the main file of a freshly migrated database yields an empty database. The engine
+// itself always reads the log, so a database it wrote is complete when it opens it again.
+//
+// A failure can leave a partial file behind. The caller removes it with Discard.
+func (s *TenantStore) Provision(ctx context.Context, dbPath string, p entities.TenantProfile) (uint, error) {
+	dst := db.ResolvePath(s.dataDir, dbPath)
+	if _, err := os.Stat(dst); err == nil {
+		return 0, internal("create merchant database", fmt.Errorf("%s already exists", dst))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, internal("stat merchant database", err)
+	}
 	version, err := dbmigrate.Latest(s.fsys, dbmigrate.Tenant)
 	if err != nil {
-		return entities.TenantTemplate{}, internal("find latest tenant migration", err)
+		return 0, internal("find latest tenant migration", err)
 	}
-	path := filepath.Join(s.dataDir, "templates", fmt.Sprintf("tenant-%06d.db", version))
-	tpl := entities.TenantTemplate{Path: path, Version: version}
-
-	s.tplMu.Lock()
-	defer s.tplMu.Unlock()
-
-	if _, err := os.Stat(path); err == nil {
-		return tpl, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return entities.TenantTemplate{}, internal("stat template", err)
+	if err := s.migrate(ctx, dst, version); err != nil {
+		return 0, err
 	}
+	if err := s.initProfile(ctx, dst, version, p); err != nil {
+		return 0, err
+	}
+	return version, nil
+}
 
-	tmp := path + ".building"
-	removeDBFiles(tmp)
-	defer removeDBFiles(tmp) // a no-op after the rename below
-
+// migrate creates the file at path and applies every tenant migration, which must end at version.
+func (s *TenantStore) migrate(ctx context.Context, path string, version uint) error {
 	opts := s.opts
 	opts.MustExist = false
-	sqlDB, err := db.Open(ctx, tmp, opts)
+	sqlDB, err := db.Open(ctx, path, opts)
 	if err != nil {
-		return entities.TenantTemplate{}, internal("open template database", err)
+		return internal("open merchant database", err)
 	}
 	m, err := dbmigrate.New(s.fsys, dbmigrate.Tenant, sqlDB)
 	if err != nil {
 		_ = sqlDB.Close()
-		return entities.TenantTemplate{}, internal("prepare template migrations", err)
+		return internal("prepare merchant migrations", err)
 	}
 	upErr := m.Up()
 	if errors.Is(upErr, migrate.ErrNoChange) {
@@ -84,44 +85,16 @@ func (s *TenantStore) EnsureTemplate(ctx context.Context) (entities.TenantTempla
 	got, dirty, vErr := m.Version()
 	srcErr, dbErr := m.Close() // also closes sqlDB
 	if err := errors.Join(upErr, vErr, srcErr, dbErr); err != nil {
-		return entities.TenantTemplate{}, internal("migrate template", err)
+		return internal("migrate merchant database", err)
 	}
 	if dirty || got != version {
-		return entities.TenantTemplate{}, internal("migrate template",
+		return internal("migrate merchant database",
 			fmt.Errorf("ended at version %d dirty=%v, want %d", got, dirty, version))
 	}
-
-	// A copy must capture everything, so no write-ahead data may be left outside the file.
-	if err := requireNoSideData(tmp); err != nil {
-		return entities.TenantTemplate{}, internal("seal template", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return entities.TenantTemplate{}, internal("create template directory", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return entities.TenantTemplate{}, internal("publish template", err)
-	}
-	return tpl, nil
+	return nil
 }
 
-// Provision copies the template to dbPath (relative to the data directory), checks that the copy is
-// at the template's schema version and writes the merchant_profile row.
-//
-// A failure can leave a partial file behind. The caller removes it with Discard.
-func (s *TenantStore) Provision(
-	ctx context.Context,
-	tpl entities.TenantTemplate,
-	dbPath string,
-	p entities.TenantProfile,
-) error {
-	dst := db.ResolvePath(s.dataDir, dbPath)
-	if err := copyFile(tpl.Path, dst); err != nil {
-		return internal("copy template", err)
-	}
-	return s.initProfile(ctx, dst, tpl.Version, p)
-}
-
-// initProfile confirms the copied database really is at the expected schema version and writes
+// initProfile confirms the new database really is at the expected schema version and writes
 // its single merchant_profile row.
 func (s *TenantStore) initProfile(
 	ctx context.Context,
@@ -151,7 +124,7 @@ func (s *TenantStore) initProfile(
 		}
 		if dirty || got != int64(version) {
 			return internal("check schema version",
-				fmt.Errorf("copied database is at version %d dirty=%v, want %d", got, dirty, version))
+				fmt.Errorf("merchant database is at version %d dirty=%v, want %d", got, dirty, version))
 		}
 		at := p.At.Unix()
 		if _, err := tx.NewQuery(
