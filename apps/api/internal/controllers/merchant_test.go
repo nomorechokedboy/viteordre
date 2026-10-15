@@ -78,20 +78,18 @@ type fakeTenants struct {
 	provisionFn  func() // runs inside Provision, e.g. to cancel the context
 	unsafe       map[string]bool
 	discarded    []string
-	tpl          entities.TenantTemplate
+	version      uint
 }
 
-func (f *fakeTenants) EnsureTemplate(context.Context) (entities.TenantTemplate, error) {
-	f.calls = append(f.calls, "EnsureTemplate")
-	return f.tpl, nil
-}
-
-func (f *fakeTenants) Provision(_ context.Context, _ entities.TenantTemplate, _ string, _ entities.TenantProfile) error {
+func (f *fakeTenants) Provision(_ context.Context, _ string, _ entities.TenantProfile) (uint, error) {
 	f.calls = append(f.calls, "Provision")
 	if f.provisionFn != nil {
 		f.provisionFn()
 	}
-	return f.provisionErr
+	if f.provisionErr != nil {
+		return 0, f.provisionErr
+	}
+	return f.version, nil
 }
 
 func (f *fakeTenants) Discard(path string) error {
@@ -105,7 +103,7 @@ func (f *fakeTenants) Discard(path string) error {
 
 func setup(o controllers.Options) (*controllers.MerchantController, *fakeRepo, *fakeTenants) {
 	r := &fakeRepo{}
-	t := &fakeTenants{tpl: entities.TenantTemplate{Path: "/tpl.db", Version: 3}}
+	t := &fakeTenants{version: 3}
 	return controllers.NewMerchantController(r, t, o), r, t
 }
 
@@ -117,7 +115,7 @@ func TestCreateRunsTheStepsInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"EnsureTemplate", "Provision"}; !reflect.DeepEqual(tn.calls, want) {
+	if want := []string{"Provision"}; !reflect.DeepEqual(tn.calls, want) {
 		t.Errorf("tenant calls = %v, want %v", tn.calls, want)
 	}
 	if want := []string{"Register", "MarkReady"}; !reflect.DeepEqual(r.calls, want) {
@@ -169,7 +167,7 @@ func TestRegisterErrorIsReturnedAsIsAndNothingIsRolledBack(t *testing.T) {
 func TestProvisionFailureRollsBack(t *testing.T) {
 	boom := apperr.Wrap(errors.New("disk full"), apperr.Internal, "internal error")
 	for name, setFail := range map[string]func(*fakeRepo, *fakeTenants){
-		"provision": func(_ *fakeRepo, tn *fakeTenants) { tn.provisionErr = boom },
+		"provision":  func(_ *fakeRepo, tn *fakeTenants) { tn.provisionErr = boom },
 		"mark ready": func(r *fakeRepo, _ *fakeTenants) { r.markReadyErr = boom },
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -36,11 +36,12 @@ type failingStore struct {
 	provisionErr error
 }
 
-func (f *failingStore) Provision(ctx context.Context, tpl entities.TenantTemplate, p string, pr entities.TenantProfile) error {
-	if err := f.TenantStore.Provision(ctx, tpl, p, pr); err != nil {
-		return err
+func (f *failingStore) Provision(ctx context.Context, p string, pr entities.TenantProfile) (uint, error) {
+	v, err := f.TenantStore.Provision(ctx, p, pr)
+	if err != nil {
+		return 0, err
 	}
-	return f.provisionErr
+	return v, f.provisionErr
 }
 
 // newService returns a controller on a fresh data directory with the control-plane schema applied.
@@ -210,17 +211,46 @@ func TestCreateFailureRollsBackAndFreesSlug(t *testing.T) {
 	}
 }
 
-func TestTemplateBuiltOnceAndReused(t *testing.T) {
+// Regression: with the real engine the migrations of a new database sit in its write-ahead log
+// after close, so a copy of the main file alone was empty ("no such table: schema_migrations").
+// Every merchant database is migrated in place, so each one must open with its schema and profile.
+func TestEveryMerchantDatabaseIsMigrated(t *testing.T) {
 	ctx := context.Background()
 	s, _, dir := newService(t, controllers.Options{})
+	want, err := dbmigrate.Latest(migrations.FS, dbmigrate.Tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 3; i++ {
-		if _, err := s.Create(ctx, entities.MerchantRequest{UserID: fmt.Sprintf("u%d", i), Name: "S", Slug: fmt.Sprintf("shop-%d", i)}); err != nil {
+		m, err := s.Create(ctx, entities.MerchantRequest{UserID: fmt.Sprintf("u%d", i), Name: "S", Slug: fmt.Sprintf("shop-%d", i)})
+		if err != nil {
 			t.Fatal(err)
 		}
+		if m.SchemaVersion != want {
+			t.Errorf("schema version = %d, want %d", m.SchemaVersion, want)
+		}
+		o := testOpts
+		o.MustExist = true
+		sqlDB, err := db.Open(ctx, filepath.Join(dir, entities.TenantDBPath(m.ID)), o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var version uint
+		var dirty bool
+		if err := sqlDB.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations`).Scan(&version, &dirty); err != nil {
+			t.Fatalf("read schema version: %v", err)
+		}
+		var name string
+		if err := sqlDB.QueryRowContext(ctx, `SELECT name FROM merchant_profile WHERE merchant_id = ?`, m.ID).Scan(&name); err != nil {
+			t.Fatalf("read profile: %v", err)
+		}
+		_ = sqlDB.Close()
+		if version != want || dirty || name != "S" {
+			t.Errorf("version=%d dirty=%v name=%q", version, dirty, name)
+		}
 	}
-	tpls, _ := filepath.Glob(filepath.Join(dir, "templates", "*"))
-	if len(tpls) != 1 || !strings.HasSuffix(tpls[0], ".db") {
-		t.Fatalf("templates = %v, want a single finished file", tpls)
+	if _, err := os.Stat(filepath.Join(dir, "templates")); !os.IsNotExist(err) {
+		t.Errorf("templates directory should not exist, stat err = %v", err)
 	}
 }
 

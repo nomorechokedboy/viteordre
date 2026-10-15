@@ -30,10 +30,9 @@ type MerchantRepository interface {
 
 // TenantStore creates and removes merchant database files.
 type TenantStore interface {
-	// EnsureTemplate returns a database with every tenant migration applied, building it on first use.
-	EnsureTemplate(ctx context.Context) (entities.TenantTemplate, error)
-	// Provision turns a copy of the template into the merchant's database and writes its profile.
-	Provision(ctx context.Context, tpl entities.TenantTemplate, dbPath string, p entities.TenantProfile) error
+	// Provision creates the merchant's database with every tenant migration applied and writes its
+	// profile. It returns the schema version the database is at.
+	Provision(ctx context.Context, dbPath string, p entities.TenantProfile) (version uint, err error)
 	// Discard removes the database file at dbPath, or refuses a path outside the tenants directory.
 	Discard(dbPath string) error
 }
@@ -98,11 +97,6 @@ func (c *MerchantController) Create(ctx context.Context, req entities.MerchantRe
 	if err != nil {
 		return nil, err
 	}
-	tpl, err := c.tenants.EnsureTemplate(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	merchantID, err := newID()
 	if err != nil {
 		return nil, err
@@ -129,23 +123,24 @@ func (c *MerchantController) Create(ctx context.Context, req entities.MerchantRe
 	profile := entities.TenantProfile{
 		MerchantID: merchantID, Name: req.Name, Currency: req.Currency, Timezone: req.Timezone, At: now,
 	}
-	if err := c.provision(ctx, tpl, reg, profile); err != nil {
+	version, err := c.provision(ctx, reg, profile)
+	if err != nil {
 		c.rollback(ctx, reg, err)
 		return nil, err
 	}
-	return &entities.Merchant{ID: merchantID, Slug: req.Slug, Name: req.Name, SchemaVersion: tpl.Version}, nil
+	return &entities.Merchant{ID: merchantID, Slug: req.Slug, Name: req.Name, SchemaVersion: version}, nil
 }
 
 func (c *MerchantController) provision(
 	ctx context.Context,
-	tpl entities.TenantTemplate,
 	reg entities.Registration,
 	p entities.TenantProfile,
-) error {
-	if err := c.tenants.Provision(ctx, tpl, reg.DBPath, p); err != nil {
-		return err
+) (uint, error) {
+	version, err := c.tenants.Provision(ctx, reg.DBPath, p)
+	if err != nil {
+		return 0, err
 	}
-	return c.merchants.MarkReady(ctx, reg.MerchantID, tpl.Version, c.now())
+	return version, c.merchants.MarkReady(ctx, reg.MerchantID, version, c.now())
 }
 
 // rollback undoes a failed provisioning on a best-effort basis. It ignores ctx cancellation,

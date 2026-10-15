@@ -64,13 +64,6 @@ type TenantProfile struct {
 	At         time.Time
 }
 
-// TenantTemplate is a merchant database with every tenant migration applied and nothing else in
-// it. New merchants start as a copy of it.
-type TenantTemplate struct {
-	Path    string
-	Version uint
-}
-
 // TenantRef points at the database file of a merchant.
 type TenantRef struct {
 	MerchantID string
