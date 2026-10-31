@@ -26,12 +26,20 @@ const (
 	TenantFailed       TenantStatus = "failed" // cleanup after a failed provisioning did not finish
 )
 
+// Timestamps are the row times the database keeps itself (created_at, updated_at). Application
+// code reads them and never sets them.
+type Timestamps struct {
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 // Merchant is a shop that was created and is ready to serve.
 type Merchant struct {
 	ID            string
 	Slug          string
 	Name          string
 	SchemaVersion uint
+	Timestamps
 }
 
 // Membership is one merchant a user belongs to.
@@ -40,6 +48,7 @@ type Membership struct {
 	Slug       string
 	Name       string
 	Role       Role
+	Timestamps // of the merchant row
 }
 
 // Registration is everything the control plane records about a new merchant: the merchant row,
@@ -52,7 +61,6 @@ type Registration struct {
 	Name       string
 	ShardID    string
 	DBPath     string // relative to the data directory, see TenantDBPath
-	At         time.Time
 }
 
 // TenantProfile is the single merchant_profile row written into a new merchant database.

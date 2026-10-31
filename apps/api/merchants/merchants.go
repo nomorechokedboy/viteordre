@@ -111,6 +111,9 @@ type Merchant struct {
 	Slug string `json:"slug"`
 	Name string `json:"name"`
 	Role string `json:"role,omitempty"`
+	// CreatedAt and UpdatedAt are set by the database, in UTC (RFC 3339 on the wire).
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Create makes a merchant owned by the signed-in user, with its own database.
@@ -127,7 +130,10 @@ func (s *Service) Create(ctx context.Context, p *CreateParams) (*Merchant, error
 	if err != nil {
 		return nil, httperr.ToEncore(err)
 	}
-	return &Merchant{ID: m.ID, Slug: m.Slug, Name: m.Name, Role: string(entities.RoleOwner)}, nil
+	return &Merchant{
+		ID: m.ID, Slug: m.Slug, Name: m.Name, Role: string(entities.RoleOwner),
+		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+	}, nil
 }
 
 // ListResponse is the body of GET /merchants.
@@ -149,7 +155,10 @@ func (s *Service) List(ctx context.Context) (*ListResponse, error) {
 	}
 	out := &ListResponse{Merchants: make([]Merchant, 0, len(ms))}
 	for _, m := range ms {
-		out.Merchants = append(out.Merchants, Merchant{ID: m.MerchantID, Slug: m.Slug, Name: m.Name, Role: string(m.Role)})
+		out.Merchants = append(out.Merchants, Merchant{
+			ID: m.MerchantID, Slug: m.Slug, Name: m.Name, Role: string(m.Role),
+			CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+		})
 	}
 	return out, nil
 }

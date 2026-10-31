@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // TenantRef is one row of the control-plane tenant_databases table, joined with its merchant.
@@ -84,9 +83,9 @@ func ListTenants(ctx context.Context, control *sql.DB, selectors []string, all b
 // 'migrating' row. It never touches tenants that are provisioning or archived.
 func MarkMigrating(ctx context.Context, control *sql.DB, merchantID string) error {
 	_, err := control.ExecContext(ctx, `UPDATE tenant_databases
-		SET status = 'migrating', last_error = NULL, updated_at = ?
+		SET status = 'migrating', last_error = NULL
 		WHERE merchant_id = ? AND status IN ('ready', 'failed', 'migrating')`,
-		time.Now().Unix(), merchantID)
+		merchantID)
 	return err
 }
 
@@ -95,10 +94,9 @@ func MarkMigrating(ctx context.Context, control *sql.DB, merchantID string) erro
 func MarkFailed(ctx context.Context, control *sql.DB, merchantID string, opErr error) error {
 	_, err := control.ExecContext(ctx, `UPDATE tenant_databases
 		SET status = CASE WHEN status IN ('ready', 'failed', 'migrating') THEN 'failed' ELSE status END,
-		    last_error = ?,
-		    updated_at = ?
+		    last_error = ?
 		WHERE merchant_id = ?`,
-		opErr.Error(), time.Now().Unix(), merchantID)
+		opErr.Error(), merchantID)
 	return err
 }
 
@@ -107,7 +105,6 @@ func MarkFailed(ctx context.Context, control *sql.DB, merchantID string, opErr e
 // non-nil opErr or a dirty database marks the tenant failed. The status only changes for
 // tenants that are ready, failed or migrating.
 func MarkResult(ctx context.Context, control *sql.DB, merchantID string, version int, dirty bool, opErr error) error {
-	now := time.Now().Unix()
 	status, lastErr := "ready", sql.NullString{}
 	switch {
 	case opErr != nil:
@@ -119,9 +116,8 @@ func MarkResult(ctx context.Context, control *sql.DB, merchantID string, version
 		SET schema_version = ?,
 		    status = CASE WHEN status IN ('ready', 'failed', 'migrating') THEN ? ELSE status END,
 		    last_error = ?,
-		    last_migrated_at = ?,
-		    updated_at = ?
+		    last_migrated_at = unixepoch()
 		WHERE merchant_id = ?`,
-		version, status, lastErr, now, now, merchantID)
+		version, status, lastErr, merchantID)
 	return err
 }

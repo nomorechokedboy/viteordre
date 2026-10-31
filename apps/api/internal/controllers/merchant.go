@@ -18,9 +18,10 @@ import (
 type MerchantRepository interface {
 	// Register writes the merchant, its owner and a provisioning tenant row atomically. It returns
 	// entities.ErrSlugTaken or entities.ErrOwnerLimitReached (maxOwned <= 0 means unlimited).
-	Register(ctx context.Context, reg entities.Registration, maxOwned int) error
-	MarkReady(ctx context.Context, merchantID string, version uint, at time.Time) error
-	MarkFailed(ctx context.Context, merchantID, reason string, at time.Time) error
+	// It returns the times the database stamped on the merchant row.
+	Register(ctx context.Context, reg entities.Registration, maxOwned int) (entities.Timestamps, error)
+	MarkReady(ctx context.Context, merchantID string, version uint) error
+	MarkFailed(ctx context.Context, merchantID, reason string) error
 	// Remove deletes the merchant together with its owner and tenant rows.
 	Remove(ctx context.Context, merchantID string) error
 	ListForUser(ctx context.Context, userID string) ([]entities.Membership, error)
@@ -114,9 +115,9 @@ func (c *MerchantController) Create(ctx context.Context, req entities.MerchantRe
 		Name:       req.Name,
 		ShardID:    c.shardID,
 		DBPath:     entities.TenantDBPath(merchantID),
-		At:         now,
 	}
-	if err := c.merchants.Register(ctx, reg, c.maxOwned); err != nil {
+	stamps, err := c.merchants.Register(ctx, reg, c.maxOwned)
+	if err != nil {
 		return nil, err
 	}
 
@@ -128,7 +129,9 @@ func (c *MerchantController) Create(ctx context.Context, req entities.MerchantRe
 		c.rollback(ctx, reg, err)
 		return nil, err
 	}
-	return &entities.Merchant{ID: merchantID, Slug: req.Slug, Name: req.Name, SchemaVersion: version}, nil
+	return &entities.Merchant{
+		ID: merchantID, Slug: req.Slug, Name: req.Name, SchemaVersion: version, Timestamps: stamps,
+	}, nil
 }
 
 func (c *MerchantController) provision(
@@ -140,7 +143,7 @@ func (c *MerchantController) provision(
 	if err != nil {
 		return 0, err
 	}
-	return version, c.merchants.MarkReady(ctx, reg.MerchantID, version, c.now())
+	return version, c.merchants.MarkReady(ctx, reg.MerchantID, version)
 }
 
 // rollback undoes a failed provisioning on a best-effort basis. It ignores ctx cancellation,
@@ -161,7 +164,7 @@ func (c *MerchantController) rollback(ctx context.Context, reg entities.Registra
 	logger.Error("merchant cleanup failed, leaving the row for ReapStale",
 		"merchant_id", reg.MerchantID, "cause", cause, "discard_error", discardErr, "remove_error", removeErr)
 	if removeErr != nil {
-		if err := c.merchants.MarkFailed(ctx, reg.MerchantID, cause.Error(), c.now()); err != nil {
+		if err := c.merchants.MarkFailed(ctx, reg.MerchantID, cause.Error()); err != nil {
 			logger.Error("could not mark the tenant database as failed",
 				"merchant_id", reg.MerchantID, "error", err)
 		}
