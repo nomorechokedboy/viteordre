@@ -106,7 +106,6 @@ func (c *MerchantController) Create(ctx context.Context, req entities.MerchantRe
 	if err != nil {
 		return nil, err
 	}
-	now := c.now()
 	reg := entities.Registration{
 		MerchantID: merchantID,
 		MemberID:   memberID,
@@ -122,7 +121,7 @@ func (c *MerchantController) Create(ctx context.Context, req entities.MerchantRe
 	}
 
 	profile := entities.TenantProfile{
-		MerchantID: merchantID, Name: req.Name, Currency: req.Currency, Timezone: req.Timezone, At: now,
+		MerchantID: merchantID, Name: req.Name, Currency: req.Currency, Timezone: req.Timezone,
 	}
 	version, err := c.provision(ctx, reg, profile)
 	if err != nil {

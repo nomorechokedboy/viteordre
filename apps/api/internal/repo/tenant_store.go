@@ -126,13 +126,12 @@ func (s *TenantStore) initProfile(
 			return internal("check schema version",
 				fmt.Errorf("merchant database is at version %d dirty=%v, want %d", got, dirty, version))
 		}
-		at := p.At.Unix()
 		if _, err := tx.NewQuery(
-			`INSERT INTO merchant_profile (id, merchant_id, name, currency, timezone, created_at, updated_at)
-			 VALUES (1, {:id}, {:name}, {:currency}, {:tz}, {:at}, {:at})`).
+			`INSERT INTO merchant_profile (id, merchant_id, name, currency, timezone)
+			 VALUES (1, {:id}, {:name}, {:currency}, {:tz})`).
 			WithContext(ctx).
 			Bind(dbx.Params{
-				"id": p.MerchantID, "name": p.Name, "currency": p.Currency, "tz": p.Timezone, "at": at,
+				"id": p.MerchantID, "name": p.Name, "currency": p.Currency, "tz": p.Timezone,
 			}).Execute(); err != nil {
 			return internal("insert merchant profile", err)
 		}

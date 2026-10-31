@@ -25,10 +25,18 @@ CREATE TABLE payments (
     expires_at           INTEGER,
     confirmed_by_user_id TEXT,
     confirm_note         TEXT,
-    created_at           INTEGER NOT NULL,
-    updated_at           INTEGER NOT NULL,
+    created_at           INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at           INTEGER NOT NULL DEFAULT (unixepoch()),
     CHECK (status <> 'paid' OR paid_at IS NOT NULL)
 ) STRICT;
+
+CREATE TRIGGER payments_set_updated_at
+AFTER UPDATE ON payments
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE payments SET updated_at = unixepoch() WHERE id = NEW.id;
+END;
 CREATE INDEX idx_payments_session ON payments (session_id);
 CREATE INDEX idx_payments_status ON payments (status, created_at);
 
@@ -65,7 +73,7 @@ CREATE TABLE audit_logs (
     entity_id     TEXT,
     diff          TEXT,
     ip            TEXT,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL DEFAULT (unixepoch())
 ) STRICT;
 CREATE INDEX idx_audit_created ON audit_logs (created_at);
 CREATE INDEX idx_audit_entity ON audit_logs (entity_type, entity_id, created_at);
