@@ -23,8 +23,8 @@ func NewMerchantRepo(control *dbx.DB) *MerchantRepo { return &MerchantRepo{db: c
 // It returns entities.ErrOwnerLimitReached when maxOwned is positive and the owner already has that
 // many merchants, and entities.ErrSlugTaken when the slug is in use, including when a concurrent
 // request won the race for it. Nothing is written in either case.
-func (r *MerchantRepo) Register(ctx context.Context, reg entities.Registration, maxOwned int) error {
-	at := reg.At.Unix()
+func (r *MerchantRepo) Register(ctx context.Context, reg entities.Registration, maxOwned int) (entities.Timestamps, error) {
+	var stamps entities.Timestamps
 	err := r.db.TransactionalContext(ctx, nil, func(tx *dbx.Tx) error {
 		if maxOwned > 0 {
 			var owned int
@@ -41,11 +41,11 @@ func (r *MerchantRepo) Register(ctx context.Context, reg entities.Registration, 
 		}
 
 		_, err := tx.NewQuery(
-			`INSERT INTO merchants (id, slug, name, status, created_by, created_at, updated_at)
-			 VALUES ({:id}, {:slug}, {:name}, 'active', {:user}, {:at}, {:at})`).
+			`INSERT INTO merchants (id, slug, name, status, created_by)
+			 VALUES ({:id}, {:slug}, {:name}, 'active', {:user})`).
 			WithContext(ctx).
 			Bind(dbx.Params{
-				"id": reg.MerchantID, "slug": reg.Slug, "name": reg.Name, "user": reg.OwnerID, "at": at,
+				"id": reg.MerchantID, "slug": reg.Slug, "name": reg.Name, "user": reg.OwnerID,
 			}).Execute()
 		if isUniqueViolation(err) {
 			return entities.ErrSlugTaken
@@ -55,41 +55,54 @@ func (r *MerchantRepo) Register(ctx context.Context, reg entities.Registration, 
 		}
 
 		if _, err := tx.NewQuery(
-			`INSERT INTO merchant_members (id, merchant_id, user_id, role, created_at)
-			 VALUES ({:id}, {:merchant}, {:user}, {:role}, {:at})`).
+			`INSERT INTO merchant_members (id, merchant_id, user_id, role)
+			 VALUES ({:id}, {:merchant}, {:user}, {:role})`).
 			WithContext(ctx).
 			Bind(dbx.Params{
 				"id": reg.MemberID, "merchant": reg.MerchantID, "user": reg.OwnerID,
-				"role": string(entities.RoleOwner), "at": at,
+				"role": string(entities.RoleOwner),
 			}).Execute(); err != nil {
 			return internal("insert owner membership", err)
 		}
 
 		if _, err := tx.NewQuery(
-			`INSERT INTO tenant_databases (merchant_id, shard_id, db_path, schema_version, status, created_at, updated_at)
-			 VALUES ({:merchant}, {:shard}, {:path}, 0, {:status}, {:at}, {:at})`).
+			`INSERT INTO tenant_databases (merchant_id, shard_id, db_path, schema_version, status)
+			 VALUES ({:merchant}, {:shard}, {:path}, 0, {:status})`).
 			WithContext(ctx).
 			Bind(dbx.Params{
 				"merchant": reg.MerchantID, "shard": reg.ShardID, "path": reg.DBPath,
-				"status": string(entities.TenantProvisioning), "at": at,
+				"status": string(entities.TenantProvisioning),
 			}).Execute(); err != nil {
 			return internal("insert tenant database", err)
 		}
+
+		// The database filled in the times, read them back instead of guessing them in Go.
+		var created, updated int64
+		if err := tx.NewQuery(`SELECT created_at, updated_at FROM merchants WHERE id = {:id}`).
+			WithContext(ctx).Bind(dbx.Params{"id": reg.MerchantID}).Row(&created, &updated); err != nil {
+			return internal("read merchant times", err)
+		}
+		stamps = entities.Timestamps{CreatedAt: fromUnix(created), UpdatedAt: fromUnix(updated)}
 		return nil
 	})
-	return internal("register merchant", err) // begin and commit failures; classified errors pass through
+	// begin and commit failures get wrapped; classified errors pass through
+	return stamps, internal("register merchant", err)
 }
 
-// MarkReady flips a provisioning tenant database to ready at schema version.
-func (r *MerchantRepo) MarkReady(ctx context.Context, merchantID string, version uint, at time.Time) error {
+// fromUnix turns a stored unix-seconds value into a UTC time.
+func fromUnix(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
+
+// MarkReady flips a provisioning tenant database to ready at schema version. The database stamps
+// last_migrated_at and updated_at.
+func (r *MerchantRepo) MarkReady(ctx context.Context, merchantID string, version uint) error {
 	res, err := r.db.NewQuery(
 		`UPDATE tenant_databases
-		 SET status = {:ready}, schema_version = {:version}, last_migrated_at = {:at}, last_error = NULL, updated_at = {:at}
+		 SET status = {:ready}, schema_version = {:version}, last_migrated_at = unixepoch(), last_error = NULL
 		 WHERE merchant_id = {:id} AND status = {:provisioning}`).
 		WithContext(ctx).
 		Bind(dbx.Params{
 			"ready": string(entities.TenantReady), "provisioning": string(entities.TenantProvisioning),
-			"version": int64(version), "at": at.Unix(), "id": merchantID,
+			"version": int64(version), "id": merchantID,
 		}).Execute()
 	if err != nil {
 		return internal("mark tenant ready", err)
@@ -101,13 +114,13 @@ func (r *MerchantRepo) MarkReady(ctx context.Context, merchantID string, version
 }
 
 // MarkFailed records why a tenant database could not be cleaned up, so ReapStale can retry.
-func (r *MerchantRepo) MarkFailed(ctx context.Context, merchantID, reason string, at time.Time) error {
+func (r *MerchantRepo) MarkFailed(ctx context.Context, merchantID, reason string) error {
 	_, err := r.db.NewQuery(
-		`UPDATE tenant_databases SET status = {:failed}, last_error = {:reason}, updated_at = {:at}
+		`UPDATE tenant_databases SET status = {:failed}, last_error = {:reason}
 		 WHERE merchant_id = {:id}`).
 		WithContext(ctx).
 		Bind(dbx.Params{
-			"failed": string(entities.TenantFailed), "reason": reason, "at": at.Unix(), "id": merchantID,
+			"failed": string(entities.TenantFailed), "reason": reason, "id": merchantID,
 		}).Execute()
 	return internal("mark tenant failed", err)
 }
@@ -124,13 +137,15 @@ func (r *MerchantRepo) Remove(ctx context.Context, merchantID string) error {
 // oldest first. A user without merchants gets an empty list, not an error.
 func (r *MerchantRepo) ListForUser(ctx context.Context, userID string) ([]entities.Membership, error) {
 	var rows []struct {
-		ID   string `db:"id"`
-		Slug string `db:"slug"`
-		Name string `db:"name"`
-		Role string `db:"role"`
+		ID      string `db:"id"`
+		Slug    string `db:"slug"`
+		Name    string `db:"name"`
+		Role    string `db:"role"`
+		Created int64  `db:"created_at"`
+		Updated int64  `db:"updated_at"`
 	}
 	err := r.db.NewQuery(
-		`SELECT m.id, m.slug, m.name, mm.role
+		`SELECT m.id, m.slug, m.name, mm.role, m.created_at, m.updated_at
 		 FROM merchant_members mm
 		 JOIN merchants m ON m.id = mm.merchant_id
 		 JOIN tenant_databases t ON t.merchant_id = m.id
@@ -147,6 +162,7 @@ func (r *MerchantRepo) ListForUser(ctx context.Context, userID string) ([]entiti
 	for _, row := range rows {
 		out = append(out, entities.Membership{
 			MerchantID: row.ID, Slug: row.Slug, Name: row.Name, Role: entities.Role(row.Role),
+			Timestamps: entities.Timestamps{CreatedAt: fromUnix(row.Created), UpdatedAt: fromUnix(row.Updated)},
 		})
 	}
 	return out, nil

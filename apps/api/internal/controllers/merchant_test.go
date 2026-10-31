@@ -31,22 +31,22 @@ type fakeRepo struct {
 	list       []entities.Membership
 }
 
-func (f *fakeRepo) Register(_ context.Context, r entities.Registration, max int) error {
+func (f *fakeRepo) Register(_ context.Context, r entities.Registration, max int) (entities.Timestamps, error) {
 	f.calls = append(f.calls, "Register")
 	f.maxOwnedSeen = max
 	if f.registerErr != nil {
-		return f.registerErr
+		return entities.Timestamps{}, f.registerErr
 	}
 	f.registered = append(f.registered, r)
-	return nil
+	return entities.Timestamps{CreatedAt: time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC()}, nil
 }
 
-func (f *fakeRepo) MarkReady(context.Context, string, uint, time.Time) error {
+func (f *fakeRepo) MarkReady(context.Context, string, uint) error {
 	f.calls = append(f.calls, "MarkReady")
 	return f.markReadyErr
 }
 
-func (f *fakeRepo) MarkFailed(_ context.Context, _ string, reason string, _ time.Time) error {
+func (f *fakeRepo) MarkFailed(_ context.Context, _ string, reason string) error {
 	f.calls = append(f.calls, "MarkFailed")
 	f.markFailedFor = append(f.markFailedFor, reason)
 	return nil
@@ -124,6 +124,9 @@ func TestCreateRunsTheStepsInOrder(t *testing.T) {
 	reg := r.registered[0]
 	if m.ID != reg.MerchantID || m.Slug != "shop" || m.SchemaVersion != 3 {
 		t.Errorf("merchant = %+v", m)
+	}
+	if !m.CreatedAt.Equal(time.Unix(100, 0)) || !m.UpdatedAt.Equal(time.Unix(100, 0)) {
+		t.Errorf("times = %v, %v, want the ones the repository returned", m.CreatedAt, m.UpdatedAt)
 	}
 	if reg.DBPath != entities.TenantDBPath(reg.MerchantID) || reg.OwnerID != "u1" || reg.ShardID != "s1" || reg.MemberID == "" {
 		t.Errorf("registration = %+v", reg)

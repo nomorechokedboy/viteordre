@@ -413,3 +413,39 @@ func TestRepositoryErrorsDoNotLeakDriverText(t *testing.T) {
 		t.Fatalf("got %#v, want Internal \"internal error\" with the driver error as the cause", err)
 	}
 }
+
+// The database owns created_at and updated_at: Create reads them back, and a later update bumps
+// updated_at through the trigger without application code touching it.
+func TestTimestampsAreSetByTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	s, control, _ := newService(t, controllers.Options{})
+	m, err := s.Create(ctx, entities.MerchantRequest{UserID: "u", Name: "Shop", Slug: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(m.CreatedAt) > time.Minute || m.UpdatedAt.Before(m.CreatedAt) {
+		t.Fatalf("times = %v, %v", m.CreatedAt, m.UpdatedAt)
+	}
+	got, err := s.ListForUser(ctx, "u")
+	if err != nil || len(got) != 1 || !got[0].CreatedAt.Equal(m.CreatedAt) {
+		t.Fatalf("list = %+v, %v", got, err)
+	}
+
+	// Backdate the row, then change it without naming updated_at: the trigger must refresh it.
+	if _, err := control.DB().Exec(`UPDATE merchants SET updated_at = 0 WHERE id = ?`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.DB().Exec(`UPDATE merchants SET name = 'Renamed' WHERE id = ?`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, control, `SELECT COUNT(*) FROM merchants WHERE id = ? AND updated_at > 0`, m.ID); n != 1 {
+		t.Fatal("updated_at was not refreshed by the trigger")
+	}
+	// An explicit updated_at is respected.
+	if _, err := control.DB().Exec(`UPDATE merchants SET name = 'Again', updated_at = 5 WHERE id = ?`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, control, `SELECT COUNT(*) FROM merchants WHERE id = ? AND updated_at = 5`, m.ID); n != 1 {
+		t.Fatal("explicit updated_at was overwritten")
+	}
+}
