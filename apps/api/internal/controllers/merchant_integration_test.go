@@ -449,3 +449,41 @@ func TestTimestampsAreSetByTheDatabase(t *testing.T) {
 		t.Fatal("explicit updated_at was overwritten")
 	}
 }
+
+// The tenant tables follow the same rule: the profile row gets its times from the database and the
+// trigger refreshes updated_at on a later change.
+func TestTenantTimestampsAreSetByTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	s, _, dir := newService(t, controllers.Options{})
+	m, err := s.Create(ctx, entities.MerchantRequest{UserID: "u", Name: "Shop", Slug: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := testOpts
+	o.MustExist = true
+	sqlDB, err := db.Open(ctx, filepath.Join(dir, entities.TenantDBPath(m.ID)), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+
+	var created, updated int64
+	if err := sqlDB.QueryRowContext(ctx, `SELECT created_at, updated_at FROM merchant_profile`).Scan(&created, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(time.Unix(created, 0)) > time.Minute || updated < created {
+		t.Fatalf("created_at=%d updated_at=%d", created, updated)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `UPDATE merchant_profile SET updated_at = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `UPDATE merchant_profile SET name = 'Renamed'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `SELECT updated_at FROM merchant_profile`).Scan(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated == 0 {
+		t.Fatal("updated_at was not refreshed by the trigger")
+	}
+}

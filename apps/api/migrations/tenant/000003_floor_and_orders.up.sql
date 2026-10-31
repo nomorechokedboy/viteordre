@@ -20,11 +20,19 @@ CREATE TABLE dining_tables (
     seats      INTEGER NOT NULL DEFAULT 2 CHECK (seats > 0),
     qr_token   TEXT NOT NULL UNIQUE,
     is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE (branch_id, code),
     UNIQUE (id, branch_id)
 ) STRICT;
+
+CREATE TRIGGER dining_tables_set_updated_at
+AFTER UPDATE ON dining_tables
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE dining_tables SET updated_at = unixepoch() WHERE id = NEW.id;
+END;
 CREATE INDEX idx_tables_branch ON dining_tables (branch_id, is_active);
 
 -- One visit at a table: several order rounds, one bill.
@@ -77,11 +85,19 @@ CREATE TABLE orders (
     total          INTEGER NOT NULL DEFAULT 0 CHECK (total >= 0),
     guest_name     TEXT,
     note           TEXT,
-    created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at     INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE (branch_id, order_date, order_no),
     FOREIGN KEY (session_id, table_id, branch_id) REFERENCES table_sessions (id, table_id, branch_id)
 ) STRICT;
+
+CREATE TRIGGER orders_set_updated_at
+AFTER UPDATE ON orders
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE orders SET updated_at = unixepoch() WHERE id = NEW.id;
+END;
 CREATE INDEX idx_orders_branch_status ON orders (branch_id, status, created_at);
 CREATE INDEX idx_orders_session ON orders (session_id);
 
@@ -99,7 +115,7 @@ CREATE TABLE order_items (
     note          TEXT,
     status        TEXT NOT NULL DEFAULT 'pending'
                   CHECK (status IN ('pending', 'preparing', 'served', 'cancelled')),
-    created_at    INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
     CHECK (line_total = (unit_price + options_total) * qty)
 ) STRICT;
 CREATE INDEX idx_order_items_order ON order_items (order_id);

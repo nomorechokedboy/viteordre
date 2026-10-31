@@ -7,9 +7,17 @@ CREATE TABLE menu_categories (
     name       TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 ) STRICT;
+
+CREATE TRIGGER menu_categories_set_updated_at
+AFTER UPDATE ON menu_categories
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE menu_categories SET updated_at = unixepoch() WHERE id = NEW.id;
+END;
 
 CREATE TABLE menu_items (
     id          TEXT PRIMARY KEY,
@@ -20,9 +28,17 @@ CREATE TABLE menu_items (
     base_price  INTEGER NOT NULL CHECK (base_price >= 0),
     sort_order  INTEGER NOT NULL DEFAULT 0,
     is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
 ) STRICT;
+
+CREATE TRIGGER menu_items_set_updated_at
+AFTER UPDATE ON menu_items
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE menu_items SET updated_at = unixepoch() WHERE id = NEW.id;
+END;
 CREATE INDEX idx_items_category ON menu_items (category_id, sort_order);
 
 -- Option groups such as Size or Toppings, owned by one item.
@@ -77,7 +93,7 @@ CREATE TABLE item_sale_windows (
     valid_to       TEXT,
     price_override INTEGER CHECK (price_override IS NULL OR price_override >= 0),
     is_active      INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    created_at     INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
     CHECK (start_minute <> end_minute)
 ) STRICT;
 CREATE INDEX idx_sale_windows_item ON item_sale_windows (item_id, is_active);

@@ -69,7 +69,6 @@ type TenantProfile struct {
 	Name       string
 	Currency   string
 	Timezone   string
-	At         time.Time
 }
 
 // TenantRef points at the database file of a merchant.
