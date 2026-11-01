@@ -4,6 +4,9 @@
 // Encore only manages PostgreSQL through encore.dev/storage/sqldb. A Turso file is just a Go
 // resource that you open yourself, so a service opens it in initService and closes it in
 // Shutdown, see the example in the README that ships with this package.
+//
+// All Encore services of one server run in one process, and a Turso file allows a single owner
+// per process, so they must share one Manager. Use Default, not New, in a service's initService.
 package tenantdb
 
 import (
@@ -11,11 +14,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/pocketbase/dbx"
 
 	"encore.app/internal/db"
+	"encore.app/internal/entities"
 )
 
 // ErrTenantUnavailable means the merchant has no database that is ready to serve.
@@ -35,6 +40,67 @@ type Manager struct {
 	mu      sync.Mutex
 	tenants map[string]*dbx.DB
 	closed  bool
+
+	shared bool // made by Default, closed by the last Release
+}
+
+// Config says where the databases live. Every service passes the same one to Default.
+type Config struct {
+	DataDir     string
+	ControlFile string
+	Options     db.Options
+}
+
+// shared is the process-wide Manager behind Default.
+var shared struct {
+	mu   sync.Mutex
+	m    *Manager
+	cfg  Config
+	refs int
+}
+
+// Default returns the process-wide Manager, opening it on the first call. Each successful call must
+// be paired with one Release, normally in the service's Shutdown, and the databases close when the
+// last service has released it.
+//
+// Every caller must pass an equal Config. A different one is an error rather than a second Manager
+// or a silent winner, because two Managers would open control.db twice in one process.
+func Default(ctx context.Context, cfg Config) (*Manager, error) {
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	if shared.m != nil {
+		if !reflect.DeepEqual(cfg, shared.cfg) {
+			return nil, errors.New("tenantdb: Default called with a different Config than the one already in use")
+		}
+		shared.refs++
+		return shared.m, nil
+	}
+	m, err := New(ctx, cfg.DataDir, cfg.ControlFile, cfg.Options)
+	if err != nil {
+		return nil, err
+	}
+	m.shared = true
+	shared.m, shared.cfg, shared.refs = m, cfg, 1
+	return m, nil
+}
+
+// Release gives back a Manager obtained from Default and closes it with the last release. On a
+// Manager made by New it is the same as Close.
+func (m *Manager) Release() error {
+	if !m.shared {
+		return m.Close()
+	}
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	if shared.m != m || shared.refs == 0 {
+		return nil // already released
+	}
+	shared.refs--
+	if shared.refs > 0 {
+		return nil
+	}
+	shared.m = nil
+	return m.Close()
 }
 
 // New opens the control-plane database at <dataDir>/<controlFile>, creating it if missing.
@@ -56,7 +122,8 @@ func New(ctx context.Context, dataDir, controlFile string, opts db.Options) (*Ma
 func (m *Manager) Control() *dbx.DB { return m.control }
 
 // Tenant returns the handle for a merchant database. The merchant must have a tenant_databases
-// row with status ready.
+// row with status ready or migrating, the same states that ListForUser shows, so a merchant that is
+// listed can always be opened.
 //
 // The lock is held while a missing database is opened, which briefly serializes first use of
 // different merchants. That is a deliberate trade for simplicity.
@@ -81,7 +148,7 @@ func (m *Manager) Tenant(ctx context.Context, merchantID string) (*dbx.DB, error
 	if err != nil {
 		return nil, fmt.Errorf("tenantdb: look up merchant %s: %w", merchantID, err)
 	}
-	if status != "ready" {
+	if status != string(entities.TenantReady) && status != string(entities.TenantMigrating) {
 		return nil, fmt.Errorf("%w: status is %s", ErrTenantUnavailable, status)
 	}
 

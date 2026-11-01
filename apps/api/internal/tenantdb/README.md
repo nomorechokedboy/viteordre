@@ -1,7 +1,7 @@
 # Using dbx with Encore
 
-Encore only manages PostgreSQL (`sqldb`). A Turso file is a plain Go resource: open it in your
-service's `initService`, close it in `Shutdown`. Encore calls both.
+Encore only manages PostgreSQL (`sqldb`). A Turso file is a plain Go resource: get the shared
+Manager in your service's `initService`, release it in `Shutdown`. Encore calls both.
 
 ```go
 package orders
@@ -9,6 +9,7 @@ package orders
 import (
 	"context"
 	"os"
+	"time"
 
 	"encore.app/internal/db"
 	"encore.app/internal/tenantdb"
@@ -20,16 +21,18 @@ type Service struct {
 }
 
 func initService() (*Service, error) {
-	m, err := tenantdb.New(context.Background(),
-		envOr("DB_DATA_DIR", "./data"), envOr("DB_CONTROL_FILE", "control.db"),
-		db.Options{MaxOpenConns: 8})
+	m, err := tenantdb.Default(context.Background(), tenantdb.Config{
+		DataDir:     envOr("DB_DATA_DIR", "./data"),
+		ControlFile: envOr("DB_CONTROL_FILE", "control.db"),
+		Options:     db.Options{BusyTimeout: 10 * time.Second, MaxOpenConns: 8},
+	})
 	if err != nil {
 		return nil, err
 	}
 	return &Service{dbs: m}, nil
 }
 
-func (s *Service) Shutdown(force context.Context) { _ = s.dbs.Close() }
+func (s *Service) Shutdown(force context.Context) { _ = s.dbs.Release() }
 
 //encore:api public method=GET path=/merchants/:merchantID/tables
 func (s *Service) ListTables(ctx context.Context, merchantID string) (*TablesResp, error) {
@@ -40,5 +43,10 @@ func (s *Service) ListTables(ctx context.Context, merchantID string) (*TablesRes
 func envOr(k, d string) string { if v := os.Getenv(k); v != "" { return v }; return d }
 ```
 
-Every Encore service in one process shares the same data directory, so only one service should
-own the Manager; others call it through an Encore API.
+Every Encore service of one server runs in one process, and a Turso file allows one owner per
+process. So all services get the same Manager from `tenantdb.Default`, each passing an equal
+`Config` (a different one is an error), and each calls `Release` once. The files close when the last
+service has released it. Do not call `tenantdb.New` in a service, it would open `control.db` a
+second time.
+
+`Tenant` opens merchants whose database is `ready` or `migrating`, the states `ListForUser` shows.

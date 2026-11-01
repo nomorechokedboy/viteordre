@@ -39,7 +39,9 @@ func initService() (*Service, error) {
 	dataDir := envOr("DB_DATA_DIR", "./data")
 	opts := db.Options{BusyTimeout: 10 * time.Second, MaxOpenConns: 8}
 
-	dbs, err := tenantdb.New(context.Background(), dataDir, envOr("DB_CONTROL_FILE", "control.db"), opts)
+	dbs, err := tenantdb.Default(context.Background(), tenantdb.Config{
+		DataDir: dataDir, ControlFile: envOr("DB_CONTROL_FILE", "control.db"), Options: opts,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +90,7 @@ func (s *Service) reap(ctx context.Context) {
 func (s *Service) Shutdown(force context.Context) {
 	s.stopReaper()
 	s.reaperDone.Wait()
-	_ = s.dbs.Close()
+	_ = s.dbs.Release()
 }
 
 // CreateParams is the body of POST /merchants.
